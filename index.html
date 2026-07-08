@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>PushCoach — your live push-up coach</title>
+<style>
+  :root {
+    --bg: #0a0e16;
+    --accent: #ff5a3c;
+    --accent2: #34d399;
+    --warn: #fbbf24;
+    --danger: #ef4444;
+    --ink: #f4f7fb;
+    --muted: #9aa6b5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: #000;
+  }
+
+  /* Video + skeleton overlay share identical sizing + object-fit so they align. */
+  #cam, #overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  #overlay { pointer-events: none; }
+
+  /* Vignette so HUD text is always readable over the video. */
+  #stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(120% 90% at 50% 50%, transparent 40%, rgba(0,0,0,.55) 100%),
+      linear-gradient(to bottom, rgba(0,0,0,.45), transparent 22%, transparent 70%, rgba(0,0,0,.6));
+  }
+
+  /* ---------- HUD ---------- */
+  .hud { position: absolute; z-index: 5; }
+
+  #topbar {
+    top: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: max(16px, env(safe-area-inset-top)) 22px 16px;
+    gap: 16px;
+  }
+  #brand { font-weight: 800; letter-spacing: .5px; font-size: 20px; }
+  #brand span { color: var(--accent); }
+  #round {
+    font-weight: 700; font-size: 15px; color: var(--muted);
+    background: rgba(255,255,255,.08); padding: 7px 14px; border-radius: 999px;
+    backdrop-filter: blur(6px);
+  }
+  #round b { color: var(--ink); }
+
+  /* Center rep counter */
+  #counter {
+    inset: 0; display: grid; place-content: center; text-align: center;
+    pointer-events: none;
+  }
+  #repnum {
+    font-size: clamp(96px, 26vw, 280px);
+    font-weight: 900; line-height: .9;
+    text-shadow: 0 6px 40px rgba(0,0,0,.6);
+    transition: transform .12s ease;
+  }
+  #repnum.pulse { transform: scale(1.18); color: var(--accent); }
+  #reptarget { font-size: clamp(16px, 3vw, 24px); color: var(--muted); font-weight: 700; margin-top: 4px; }
+
+  /* Status line */
+  #status {
+    left: 0; right: 0; bottom: 120px; text-align: center;
+    font-size: clamp(18px, 4vw, 28px); font-weight: 700;
+    text-shadow: 0 2px 18px rgba(0,0,0,.7);
+    padding: 0 20px;
+  }
+
+  /* Rest ring */
+  #rest {
+    inset: 0; display: none; place-content: center; text-align: center;
+    pointer-events: none;
+  }
+  #rest.show { display: grid; }
+  .ring-wrap { position: relative; width: min(60vw, 320px); aspect-ratio: 1; }
+  .ring-wrap svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: rgba(255,255,255,.12); stroke-width: 10; }
+  .ring-fg { fill: none; stroke: var(--accent2); stroke-width: 10; stroke-linecap: round; transition: stroke-dashoffset .25s linear; }
+  .ring-label {
+    position: absolute; inset: 0; display: grid; place-content: center;
+  }
+  .ring-label .secs { font-size: clamp(54px, 14vw, 120px); font-weight: 900; }
+  .ring-label .cap { font-size: 16px; color: var(--muted); font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+
+  /* "Can't see you" warning */
+  #vision-warn {
+    left: 50%; top: 22%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 10px;
+    background: rgba(239,68,68,.92); color: #fff;
+    padding: 12px 18px; border-radius: 14px;
+    font-weight: 700; font-size: 15px; max-width: 86vw; text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  #vision-warn.show { display: flex; }
+
+  /* Bottom controls */
+  #controls {
+    left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: center; gap: 14px;
+    padding: 18px 18px max(18px, env(safe-area-inset-bottom));
+  }
+  button.act {
+    border: none; cursor: pointer;
+    font-size: 18px; font-weight: 800; letter-spacing: .3px;
+    padding: 16px 38px; border-radius: 999px;
+    color: #fff; background: var(--accent);
+    box-shadow: 0 10px 28px rgba(255,90,60,.4);
+    transition: transform .08s ease, opacity .2s ease;
+  }
+  button.act:active { transform: scale(.96); }
+  button.act:disabled { opacity: .5; cursor: default; }
+  button.stop { background: #1f2937; box-shadow: none; }
+  #muteBtn {
+    background: rgba(255,255,255,.1); box-shadow: none; padding: 16px 22px;
+  }
+
+  /* Overlay messages (loading / errors / permission) */
+  #screen {
+    position: absolute; inset: 0; z-index: 20;
+    display: grid; place-content: center; text-align: center;
+    background: radial-gradient(80% 80% at 50% 30%, #131a27, #070a11);
+    padding: 32px;
+  }
+  #screen.hidden { display: none; }
+  #screen .logo { font-size: 44px; font-weight: 900; margin-bottom: 6px; }
+  #screen .logo span { color: var(--accent); }
+  #screen .tag { color: var(--muted); margin-bottom: 28px; font-size: 16px; }
+  #screen .msg { max-width: 460px; line-height: 1.5; color: var(--ink); margin: 0 auto 24px; font-size: 16px; }
+  #screen .msg.err { color: #fecaca; }
+  #screen .hint { color: var(--muted); font-size: 14px; max-width: 440px; margin: 18px auto 0; line-height: 1.5; }
+  .spinner {
+    width: 38px; height: 38px; border-radius: 50%;
+    border: 4px solid rgba(255,255,255,.15); border-top-color: var(--accent);
+    margin: 0 auto 20px; animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="overlay"></canvas>
+
+    <!-- HUD -->
+    <div id="topbar" class="hud">
+      <div id="brand">Push<span>Coach</span></div>
+      <div id="round">Round <b id="roundnum">–</b></div>
+    </div>
+
+    <div id="counter" class="hud">
+      <div id="repnum">0</div>
+      <div id="reptarget">of 10</div>
+    </div>
+
+    <div id="rest" class="hud">
+      <div class="ring-wrap">
+        <svg viewBox="0 0 120 120">
+          <circle class="ring-bg" cx="60" cy="60" r="54"></circle>
+          <circle class="ring-fg" id="ringfg" cx="60" cy="60" r="54"></circle>
+        </svg>
+        <div class="ring-label">
+          <div class="secs" id="restsecs">15</div>
+          <div class="cap">Rest</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="vision-warn" class="hud">
+      <span>👀</span><span id="vision-warn-text">I can't see you — move into frame / fix your camera angle</span>
+    </div>
+
+    <div id="status" class="hud">Tap Start when you're ready</div>
+
+    <div id="controls" class="hud">
+      <button id="startBtn" class="act">Start</button>
+      <button id="stopBtn" class="act stop" style="display:none">Stop</button>
+      <button id="muteBtn" class="act" title="Mute/unmute coach">🔊</button>
+    </div>
+
+    <!-- Full-screen overlay for loading / errors / permission -->
+    <div id="screen">
+      <div class="logo">Push<span>Coach</span></div>
+      <div class="tag">Your live AI push-up coach</div>
+      <div class="spinner" id="screenSpin"></div>
+      <div class="msg" id="screenMsg">Loading the pose model…</div>
+      <button id="screenBtn" class="act" style="display:none">Enable camera</button>
+      <div class="hint" id="screenHint">
+        Prop your camera <b>to the side</b> so it sees your full body in profile.
+        Needs <b>https://</b> or <b>localhost</b> and a granted camera permission.
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import {
+  PoseLandmarker,
+  FilesetResolver,
+  DrawingUtils
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
+
+/* =======================================================================
+   TWEAKABLES — change the workout here.
+   ======================================================================= */
+const TARGET_REPS        = 10;        // push-ups per set
+const REST_SECONDS       = 15;        // rest between rounds
+const MAX_ROUNDS         = Infinity;  // continuous rounds until Stop
+const UP_ANGLE           = 160;       // elbow angle (deg) considered "arms extended"
+const DOWN_ANGLE         = 90;        // elbow angle (deg) considered "chest down"
+const MIN_REP_INTERVAL   = 400;       // ms — debounce between counted reps
+const STALL_TIMEOUT      = 5000;      // ms — no rep this long mid-set => offer support
+const VIS_THRESHOLD      = 0.5;       // landmark visibility needed to trust an arm
+const SLOW_REP_FACTOR    = 1.8;       // a rep this much slower than the set median => fatigue
+const SHALLOW_DEPTH      = 110;       // if the deepest elbow angle in a rep stays above this => shallow
+
+/* =======================================================================
+   Coach phrase pools — picked at random so it doesn't sound robotic.
+   ======================================================================= */
+const PHRASES = {
+  greet: [
+    "Hey! I'm your push-up coach. Let's knock out a set of ten. Point the camera at your side so I can see your whole body.",
+    "Welcome back! One set of ten push-ups. Set the camera to your side for a clean profile, and let's get to work.",
+  ],
+  ready: ["Get into position.", "Down you go, plank position.", "Set yourself up."],
+  go:    ["Go!", "Let's go!", "Push!"],
+  mid:   ["Halfway there, keep it up!", "Five down, you're crushing it!", "Halfway, let's go!"],
+  near:  ["Almost there, dig in!", "Two to go, finish strong!", "So close, push through!"],
+  finish:["That's ten — enough, you're good! Great work.", "Ten reps, done! Awesome effort.", "That's the set — beautiful work, you're done!"],
+  rest:  ["Take a fifteen second rest.", "Nice. Catch your breath for fifteen.", "Rest up, fifteen seconds."],
+  next:  ["Let's go!", "Here we go again!", "Back to work!"],
+  struggle: [
+    "Push through, you've got this!",
+    "I know it's getting tough — dig deep, one rep at a time!",
+    "Stay with me, you're stronger than you think!",
+  ],
+  shallow: [
+    "Go a little lower, full range — chest down!",
+    "Give me the full depth, all the way down!",
+  ],
+  crushing: [
+    "You've got more — give me two extra!",
+    "You're flying! Two bonus reps, let's go!",
+    "Too easy for you — bang out a couple more!",
+  ],
+  stall: [
+    "Take a breath — when you're ready, one more.",
+    "No rush. Reset, then give me the next one.",
+    "Breathe it out, then back at it when you're set.",
+  ],
+};
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+/* =======================================================================
+   DOM
+   ======================================================================= */
+const video      = document.getElementById("cam");
+const canvas     = document.getElementById("overlay");
+const ctx        = canvas.getContext("2d");
+const repnumEl   = document.getElementById("repnum");
+const reptargetEl= document.getElementById("reptarget");
+const roundnumEl = document.getElementById("roundnum");
+const statusEl   = document.getElementById("status");
+const restEl     = document.getElementById("rest");
+const restSecsEl = document.getElementById("restsecs");
+const ringFg     = document.getElementById("ringfg");
+const visionWarn = document.getElementById("vision-warn");
+const startBtn   = document.getElementById("startBtn");
+const stopBtn    = document.getElementById("stopBtn");
+const muteBtn    = document.getElementById("muteBtn");
+const screen     = document.getElementById("screen");
+const screenSpin = document.getElementById("screenSpin");
+const screenMsg  = document.getElementById("screenMsg");
+const screenBtn  = document.getElementById("screenBtn");
+const screenHint = document.getElementById("screenHint");
+
+reptargetEl.textContent = "of " + TARGET_REPS;
+
+/* Rest ring geometry */
+const RING_R = 54, RING_C = 2 * Math.PI * RING_R;
+ringFg.style.strokeDasharray = RING_C;
+ringFg.style.strokeDashoffset = 0;
+
+/* =======================================================================
+   VOICE — Web Speech API.
+   Rep numbers are high-priority: they cancel any queued chatter so the
+   count never lags behind the body. Motivational lines are interruptible.
+   ======================================================================= */
+let muted = false;
+let preferredVoice = null;
+
+function loadVoice() {
+  const voices = speechSynthesis.getVoices();
+  preferredVoice =
+    voices.find(v => /en[-_]US/i.test(v.lang) && /female|samantha|zira|aria|jenny/i.test(v.name)) ||
+    voices.find(v => /^en/i.test(v.lang)) ||
+    voices[0] || null;
+}
+if ("speechSynthesis" in window) {
+  loadVoice();
+  speechSynthesis.onvoiceschanged = loadVoice;
+}
+
+function speak(text, { priority = false, rate = 1.05, pitch = 1.0 } = {}) {
+  if (muted || !("speechSynthesis" in window)) return;
+  // A priority utterance (a rep count) clears anything backed up so counting stays in sync.
+  if (priority) speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  if (preferredVoice) u.voice = preferredVoice;
+  u.rate = rate; u.pitch = pitch; u.volume = 1.0;
+  speechSynthesis.speak(u);
+}
+const NUMBER_WORDS = ["zero","one","two","three","four","five","six","seven","eight","nine","ten",
+  "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen","twenty"];
+const numberWord = n => NUMBER_WORDS[n] ?? String(n);
+
+/* =======================================================================
+   POSE MODEL
+   ======================================================================= */
+let poseLandmarker = null;
+let drawingUtils = null;
+
+async function initModel() {
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+  );
+  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+  });
+  drawingUtils = new DrawingUtils(ctx);
+}
+
+/* =======================================================================
+   CAMERA
+   ======================================================================= */
+let stream = null;
+
+async function initCamera() {
+  if (!window.isSecureContext) {
+    throw Object.assign(new Error("insecure"), { code: "insecure" });
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw Object.assign(new Error("nocam"), { code: "nocam" });
+  }
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  await video.play();
+  await new Promise(res => {
+    if (video.videoWidth) return res();
+    video.onloadedmetadata = () => res();
+  });
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+
+/* =======================================================================
+   GEOMETRY — elbow angle from shoulder–elbow–wrist (2D, in image plane).
+   ======================================================================= */
+function angleAt(a, b, c) {           // angle at vertex b, in degrees
+  const abx = a.x - b.x, aby = a.y - b.y;
+  const cbx = c.x - b.x, cby = c.y - b.y;
+  const dot = abx * cbx + aby * cby;
+  const mag = Math.hypot(abx, aby) * Math.hypot(cbx, cby) || 1e-6;
+  return Math.acos(Math.min(1, Math.max(-1, dot / mag))) * 180 / Math.PI;
+}
+
+// Landmark indices (MediaPipe BlazePose 33-point model).
+const L = { shoulder: 11, elbow: 13, wrist: 15 };
+const R = { shoulder: 12, elbow: 14, wrist: 16 };
+
+function armVisibility(lm, side) {
+  return Math.min(
+    lm[side.shoulder]?.visibility ?? 0,
+    lm[side.elbow]?.visibility ?? 0,
+    lm[side.wrist]?.visibility ?? 0
+  );
+}
+
+// Returns { angle, visibility } for the more-visible arm, or null if neither is reliable.
+function elbowAngle(lm) {
+  const lv = armVisibility(lm, L);
+  const rv = armVisibility(lm, R);
+  const side = lv >= rv ? L : R;
+  const vis = Math.max(lv, rv);
+  if (vis < VIS_THRESHOLD) return null;
+  return { angle: angleAt(lm[side.shoulder], lm[side.elbow], lm[side.wrist]), visibility: vis };
+}
+
+/* =======================================================================
+   REP STATE MACHINE
+   UP   = elbow > UP_ANGLE   (arms extended)
+   DOWN = elbow < DOWN_ANGLE (chest lowered)
+   A rep is counted on the DOWN -> UP transition (went down, then back up),
+   debounced by MIN_REP_INTERVAL. We also record each rep's duration and the
+   deepest angle reached, which the struggle heuristic reads.
+   ======================================================================= */
+let armState   = "up";     // "up" | "down"
+let repStart   = 0;        // ms timestamp when this rep's descent began
+let minAngle   = 180;      // deepest (smallest) elbow angle seen during current rep
+let lastRepAt  = 0;        // ms of last counted rep
+
+function resetRepMachine() {
+  armState = "up"; repStart = 0; minAngle = 180; lastRepAt = 0;
+}
+
+// Called every frame with a trusted elbow angle. Returns a rep object on completion.
+function updateRepMachine(angle, now) {
+  if (armState === "up") {
+    if (angle < DOWN_ANGLE) {        // crossed into DOWN
+      armState = "down";
+      repStart = now;
+      minAngle = angle;
+    }
+  } else { // down
+    minAngle = Math.min(minAngle, angle);
+    if (angle > UP_ANGLE) {          // came back UP -> a rep
+      armState = "up";
+      if (now - lastRepAt >= MIN_REP_INTERVAL) {
+        lastRepAt = now;
+        return { duration: now - repStart, depth: minAngle, at: now };
+      }
+    }
+  }
+  return null;
+}
+
+/* =======================================================================
+   SESSION / COACHING FLOW
+   A monotonically increasing token lets any async step bail the instant
+   Stop is pressed (or a new session starts).
+   ======================================================================= */
+let running = false;
+let sessionToken = 0;
+let phase = "idle";        // "idle" | "set" | "rest" | "between"
+
+// Set-scoped state
+let repCount = 0;
+let repLog = [];           // {duration, depth} per rep
+let onRepTarget = null;    // resolve() for the current set
+let stallTimer = null;
+let stallNoted = false;
+let crushNoted = false;
+let shallowNoted = false;
+
+const alive = tok => running && tok === sessionToken;
+const sleep = (ms, tok) => new Promise(res => {
+  const t = setTimeout(res, ms);
+  // Stopping resolves early; the step then checks alive() and bails.
+  const check = setInterval(() => { if (!alive(tok)) { clearTimeout(t); clearInterval(check); res(); } }, 100);
+  setTimeout(() => clearInterval(check), ms + 50);
+});
+
+function setStatus(txt) { statusEl.textContent = txt; }
+function setRepUI(n) {
+  repnumEl.textContent = n;
+  repnumEl.classList.remove("pulse");
+  void repnumEl.offsetWidth;   // restart animation
+  repnumEl.classList.add("pulse");
+}
+
+async function runSession() {
+  const tok = ++sessionToken;
+  running = true;
+  phase = "between";
+  startBtn.style.display = "none";
+  stopBtn.style.display = "";
+
+  speak(pick(PHRASES.greet));
+  setStatus("Camera to your side, full body in view");
+  await sleep(6500, tok);
+  if (!alive(tok)) return;
+
+  let round = 0;
+  while (alive(tok) && round < MAX_ROUNDS) {
+    round++;
+    roundnumEl.textContent = round;
+
+    // ---- count-in ----
+    phase = "between";
+    setStatus("Get into position…");
+    speak(pick(PHRASES.ready));
+    await sleep(2200, tok); if (!alive(tok)) return;
+    for (const n of [3, 2, 1]) {
+      setStatus(String(n));
+      speak(String(n), { priority: true, rate: 1.0 });
+      await sleep(900, tok); if (!alive(tok)) return;
+    }
+    speak(pick(PHRASES.go), { priority: true });
+
+    // ---- the set ----
+    await runSet(tok);
+    if (!alive(tok)) return;
+
+    // ---- rest ----
+    if (round < MAX_ROUNDS) await restCountdown(tok);
+    if (!alive(tok)) return;
+
+    speak("Round " + numberWord(round + 1) + " — " + pick(PHRASES.next), { priority: true });
+    await sleep(1400, tok);
+  }
+}
+
+function runSet(tok) {
+  return new Promise(resolve => {
+    phase = "set";
+    repCount = 0;
+    repLog = [];
+    stallNoted = false; crushNoted = false; shallowNoted = false;
+    onRepTarget = resolve;
+    resetRepMachine();
+    setRepUI(0);
+    setStatus("Counting…");
+    armStallTimer();
+  });
+}
+
+function armStallTimer() {
+  clearTimeout(stallTimer);
+  if (phase !== "set") return;
+  stallTimer = setTimeout(() => {
+    if (phase === "set" && repCount < TARGET_REPS && !stallNoted) {
+      stallNoted = true;
+      speak(pick(PHRASES.stall));
+      setStatus("Take your time…");
+    }
+  }, STALL_TIMEOUT);
+}
+
+// Called by the detection loop when a rep completes during a set.
+function onRep(rep) {
+  if (phase !== "set") return;
+  repCount++;
+  repLog.push(rep);
+  setRepUI(repCount);
+  stallNoted = false;
+  armStallTimer();
+
+  // Speak the number IMMEDIATELY, high priority, so it never lags the body.
+  speak(numberWord(repCount), { priority: true, rate: 1.1 });
+
+  // --- finish ---
+  if (repCount >= TARGET_REPS) {
+    clearTimeout(stallTimer);
+    phase = "between";
+    setStatus("Set complete 💪");
+    // Let the count land, then the celebration (number is priority so it won't be cut).
+    setTimeout(() => speak(pick(PHRASES.finish)), 350);
+    const done = onRepTarget; onRepTarget = null;
+    if (done) done();
+    return;
+  }
+
+  // --- milestones (queued AFTER the number; a later number can interrupt them) ---
+  if (repCount === Math.floor(TARGET_REPS / 2)) {
+    setTimeout(() => speak(pick(PHRASES.mid)), 250);
+  } else if (repCount === TARGET_REPS - 2) {
+    setTimeout(() => speak(pick(PHRASES.near)), 250);
+  }
+
+  evaluateEffort(rep);
+}
+
+/* -----------------------------------------------------------------------
+   STRUGGLE / CRUSHING-IT HEURISTIC
+   NOTE: this only INFERS effort from tempo (rep duration) and range of
+   motion (deepest elbow angle). It is not true effort/exertion sensing —
+   there's no force, heart-rate, or EMG data here, just timing + geometry.
+   ----------------------------------------------------------------------- */
+function evaluateEffort(rep) {
+  // Shallow depth — flag once, ask for full range.
+  if (rep.depth > SHALLOW_DEPTH && !shallowNoted && repCount >= 2) {
+    shallowNoted = true;
+    setTimeout(() => speak(pick(PHRASES.shallow)), 600);
+    return;
+  }
+
+  // Need a stable early-set baseline before judging tempo.
+  if (repLog.length < 4) return;
+  const early = repLog.slice(0, Math.max(2, Math.floor(repLog.length / 2)))
+                      .map(r => r.duration).sort((a, b) => a - b);
+  const median = early[Math.floor(early.length / 2)];
+
+  // Slowing down a lot vs. the early median => fatigue, switch to encouragement.
+  if (rep.duration > median * SLOW_REP_FACTOR) {
+    setTimeout(() => speak(pick(PHRASES.struggle)), 600);
+    return;
+  }
+
+  // Flying through with full depth and there's room left => push for bonus reps.
+  if (!crushNoted && repCount === TARGET_REPS - 4 &&
+      rep.duration < median * 1.1 && rep.depth < DOWN_ANGLE) {
+    crushNoted = true;
+    setTimeout(() => speak(pick(PHRASES.crushing)), 600);
+  }
+}
+
+/* -----------------------------------------------------------------------
+   REST COUNTDOWN with ring
+   ----------------------------------------------------------------------- */
+async function restCountdown(tok) {
+  phase = "rest";
+  restEl.classList.add("show");
+  speak(pick(PHRASES.rest));
+  for (let s = REST_SECONDS; s > 0; s--) {
+    if (!alive(tok)) { restEl.classList.remove("show"); return; }
+    restSecsEl.textContent = s;
+    setStatus("Resting " + s + "s…");
+    ringFg.style.strokeDashoffset = RING_C * (1 - s / REST_SECONDS);
+    if (s <= 3) speak(String(s), { priority: true, rate: 1.0 });
+    await sleep(1000, tok);
+  }
+  ringFg.style.strokeDashoffset = 0;
+  restEl.classList.remove("show");
+  phase = "between";
+}
+
+/* =======================================================================
+   DETECTION LOOP
+   ======================================================================= */
+let lastVideoTime = -1;
+let visibleNow = false;
+
+function showVisionWarn(text) {
+  document.getElementById("vision-warn-text").textContent = text;
+  visionWarn.classList.add("show");
+}
+function hideVisionWarn() { visionWarn.classList.remove("show"); }
+
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  if (!poseLandmarker || video.readyState < 2) return;
+
+  const now = performance.now();
+  let result = null;
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    result = poseLandmarker.detectForVideo(video, now);
+  }
+  if (!result) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const haveBody = result.landmarks && result.landmarks.length > 0;
+  if (haveBody) {
+    const lm = result.landmarks[0];
+    drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: "#34d399", lineWidth: 4 });
+    drawingUtils.drawLandmarks(lm, { color: "#ff5a3c", radius: 4, lineWidth: 1 });
+
+    const ea = elbowAngle(lm);
+    if (ea) {
+      hideVisionWarn();
+      visibleNow = true;
+      // Only the set phase counts reps; other phases still show the skeleton.
+      const rep = updateRepMachine(ea.angle, now);
+      if (rep && phase === "set") onRep(rep);
+    } else {
+      // Body detected but arms not reliable — common with a bad angle.
+      visibleNow = false;
+      if (running) showVisionWarn("Turn side-on so I can see your arms");
+    }
+  } else {
+    visibleNow = false;
+    if (running) {
+      showVisionWarn("I can't see you — move into frame / fix your camera angle");
+      // Person left the frame mid-set: don't carry a half-finished rep over.
+      if (phase === "set") { armState = "up"; minAngle = 180; }
+    } else {
+      hideVisionWarn();
+    }
+  }
+}
+
+/* =======================================================================
+   CONTROLS
+   ======================================================================= */
+function stopSession() {
+  running = false;
+  sessionToken++;            // invalidate any in-flight async steps
+  phase = "idle";
+  clearTimeout(stallTimer);
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  restEl.classList.remove("show");
+  ringFg.style.strokeDashoffset = 0;
+  setStatus("Stopped — tap Start to go again");
+  roundnumEl.textContent = "–";
+  startBtn.style.display = "";
+  stopBtn.style.display = "none";
+}
+
+startBtn.addEventListener("click", () => {
+  // A user gesture is required to unlock speech on most browsers.
+  if ("speechSynthesis" in window) { speak(" "); }
+  runSession();
+});
+stopBtn.addEventListener("click", stopSession);
+muteBtn.addEventListener("click", () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  if (muted && "speechSynthesis" in window) speechSynthesis.cancel();
+});
+
+/* =======================================================================
+   BOOT
+   ======================================================================= */
+function showError(title, hint) {
+  screen.classList.remove("hidden");
+  screenSpin.style.display = "none";
+  screenMsg.className = "msg err";
+  screenMsg.textContent = title;
+  screenHint.innerHTML = hint;
+}
+
+async function boot() {
+  try {
+    screenMsg.textContent = "Loading the pose model…";
+    await initModel();
+  } catch (e) {
+    showError("Couldn't load the pose model.",
+      "Check your internet connection (the model loads from a CDN on first run) and refresh.");
+    return;
+  }
+
+  // Ask for the camera behind a button — friendlier than an instant prompt,
+  // and the gesture also unlocks audio.
+  screenSpin.style.display = "none";
+  screenMsg.className = "msg";
+  screenMsg.textContent = "Ready! Enable your camera to begin.";
+  screenBtn.style.display = "";
+  screenBtn.textContent = "Enable camera";
+
+  screenBtn.addEventListener("click", async () => {
+    screenBtn.style.display = "none";
+    screenSpin.style.display = "";
+    screenMsg.textContent = "Starting camera…";
+    try {
+      await initCamera();
+      screen.classList.add("hidden");
+      renderLoop();
+    } catch (e) {
+      const code = e.code || e.name;
+      if (code === "insecure") {
+        showError("Camera needs a secure context.",
+          "Open this page over <b>https://</b> or <b>http://localhost</b>. Opening the file directly (file://) won't grant camera access.");
+      } else if (code === "NotAllowedError" || code === "SecurityError") {
+        showError("Camera permission was denied.",
+          "Allow camera access in your browser's site settings, then refresh the page.");
+        screenBtn.style.display = ""; screenBtn.textContent = "Try again";
+        screenSpin.style.display = "none";
+      } else if (code === "NotFoundError" || code === "nocam" || code === "OverconstrainedError") {
+        showError("No camera found.",
+          "Connect a webcam (or use a device with a camera) and refresh.");
+      } else {
+        showError("Couldn't start the camera.", "Close other apps using the camera and refresh. (" + (e.message || code) + ")");
+        screenBtn.style.display = ""; screenBtn.textContent = "Try again";
+        screenSpin.style.display = "none";
+      }
+    }
+  }, { once: false });
+}
+
+boot();
+</script>
+</body>
+</html>
